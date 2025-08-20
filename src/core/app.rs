@@ -33,12 +33,22 @@ pub struct EditingHostData {
     pub user: String,
     pub port: String,
     pub identity_file: String,
+    // 新增的元数据字段
+    pub folder: String,
+    pub display_name: String,
+    pub description: String,
+    pub visible: bool,
     pub current_field: usize,
+    // 原始值用于比较变更
     pub original_name: String,
     pub original_hostname: String,
     pub original_user: String,
     pub original_port: String,
     pub original_identity_file: String,
+    pub original_folder: String,
+    pub original_display_name: String,
+    pub original_description: String,
+    pub original_visible: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -48,10 +58,17 @@ pub enum ChangeType {
     Deleted(SshHost),
 }
 
+#[derive(Debug, Clone)]
+pub enum TreeItem {
+    Folder { name: String, expanded: bool, children_indices: Vec<usize> },
+    Host { host_index: usize },
+}
+
 pub struct App {
     pub hosts: Vec<SshHost>,
     pub original_hosts: Vec<SshHost>,
     pub filtered_hosts: Vec<usize>,
+    pub tree_items: Vec<TreeItem>,  // 树形结构的展示项
     pub list_state: ListState,
     pub search_query: String,
     pub mode: AppMode,
@@ -69,16 +86,13 @@ impl App {
     pub fn new() -> Result<Self> {
         let hosts = parse_ssh_config()?;
         let filtered_hosts: Vec<usize> = (0..hosts.len()).collect();
-        let mut list_state = ListState::default();
+        let list_state = ListState::default();
         
-        if !hosts.is_empty() {
-            list_state.select(Some(0));
-        }
-
-        Ok(App {
+        let mut app = App {
             original_hosts: hosts.clone(),
             hosts,
             filtered_hosts,
+            tree_items: Vec::new(),
             list_state,
             search_query: String::new(),
             mode: AppMode::Normal,
@@ -90,7 +104,15 @@ impl App {
             review_scroll: 0,
             current_edit_change_index: None,
             should_quit: false,
-        })
+        };
+        
+        app.rebuild_tree();
+        
+        if !app.tree_items.is_empty() {
+            app.list_state.select(Some(0));
+        }
+
+        Ok(app)
     }
 
     pub fn handle_event(&mut self, event: Event, terminal: &mut TerminalManager) -> Result<()> {
@@ -123,7 +145,19 @@ impl App {
             }
             KeyCode::Enter => {
                 self.mode = AppMode::Normal;
-                self.connect_to_selected(terminal)?;
+                // 处理文件夹展开/收起或连接到主机
+                if let Some(selected) = self.list_state.selected() {
+                    if let Some(tree_item) = self.tree_items.get(selected) {
+                        match tree_item {
+                            TreeItem::Folder { .. } => {
+                                self.toggle_folder_expanded(selected);
+                            },
+                            TreeItem::Host { .. } => {
+                                self.connect_to_selected(terminal)?;
+                            }
+                        }
+                    }
+                }
             }
             KeyCode::Esc => {
                 self.mode = AppMode::Normal;
@@ -141,7 +175,21 @@ impl App {
             KeyCode::Char('v') => self.mode = AppMode::ShowVersion,
             KeyCode::Down => self.next(),
             KeyCode::Up => self.previous(),
-            KeyCode::Enter => self.connect_to_selected(terminal)?,
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                // 处理文件夹展开/收起或连接到主机
+                if let Some(selected) = self.list_state.selected() {
+                    if let Some(tree_item) = self.tree_items.get(selected) {
+                        match tree_item {
+                            TreeItem::Folder { .. } => {
+                                self.toggle_folder_expanded(selected);
+                            },
+                            TreeItem::Host { .. } => {
+                                self.connect_to_selected(terminal)?;
+                            }
+                        }
+                    }
+                }
+            },
             _ => {}
         }
         Ok(())
@@ -183,6 +231,7 @@ impl App {
     pub fn filter_hosts(&mut self) {
         if self.search_query.is_empty() {
             self.filtered_hosts = (0..self.hosts.len()).collect();
+            self.rebuild_tree();
         } else {
             self.filtered_hosts = self
                 .hosts
@@ -191,9 +240,15 @@ impl App {
                 .filter(|(_, host)| host.matches_search(&self.search_query))
                 .map(|(i, _)| i)
                 .collect();
+            
+            // 在搜索模式下，显示简单列表而不是树形结构
+            self.tree_items.clear();
+            for &host_index in &self.filtered_hosts {
+                self.tree_items.push(TreeItem::Host { host_index });
+            }
         }
         
-        if !self.filtered_hosts.is_empty() {
+        if !self.tree_items.is_empty() {
             self.list_state.select(Some(0));
         } else {
             self.list_state.select(None);
@@ -201,12 +256,12 @@ impl App {
     }
 
     pub fn next(&mut self) {
-        if self.filtered_hosts.is_empty() {
+        if self.tree_items.is_empty() {
             return;
         }
         let i = match self.list_state.selected() {
             Some(i) => {
-                if i >= self.filtered_hosts.len() - 1 {
+                if i >= self.tree_items.len() - 1 {
                     0
                 } else {
                     i + 1
@@ -218,13 +273,13 @@ impl App {
     }
 
     pub fn previous(&mut self) {
-        if self.filtered_hosts.is_empty() {
+        if self.tree_items.is_empty() {
             return;
         }
         let i = match self.list_state.selected() {
             Some(i) => {
                 if i == 0 {
-                    self.filtered_hosts.len() - 1
+                    self.tree_items.len() - 1
                 } else {
                     i - 1
                 }
@@ -236,22 +291,30 @@ impl App {
 
     pub fn connect_to_selected(&self, terminal: &mut TerminalManager) -> Result<()> {
         if let Some(selected) = self.list_state.selected() {
-            if let Some(&host_idx) = self.filtered_hosts.get(selected) {
-                if let Some(host) = self.hosts.get(host_idx) {
-                    terminal.suspend()?;
-                    
-                    let status = Command::new("ssh")
-                        .arg(&host.name)
-                        .status();
-                    
-                    terminal.resume()?;
-                    
-                    match status {
-                        Ok(_) => {
-                            // Force a complete redraw by clearing the terminal
-                            terminal.terminal().clear().map_err(|e| SshcError::Terminal(e.to_string()))?;
-                        },
-                        Err(e) => return Err(SshcError::Ssh(format!("SSH connection error: {}", e))),
+            if let Some(tree_item) = self.tree_items.get(selected) {
+                match tree_item {
+                    TreeItem::Host { host_index } => {
+                        if let Some(host) = self.hosts.get(*host_index) {
+                            terminal.suspend()?;
+                            
+                            let status = Command::new("ssh")
+                                .arg(&host.name)
+                                .status();
+                            
+                            terminal.resume()?;
+                            
+                            match status {
+                                Ok(_) => {
+                                    // Force a complete redraw by clearing the terminal
+                                    terminal.terminal().clear().map_err(|e| SshcError::Terminal(e.to_string()))?;
+                                },
+                                Err(e) => return Err(SshcError::Ssh(format!("SSH connection error: {}", e))),
+                            }
+                        }
+                    },
+                    TreeItem::Folder { .. } => {
+                        // 文件夹项目不能连接，但可以展开/收起
+                        // 这个逻辑会在按键处理中实现
                     }
                 }
             }
@@ -261,8 +324,11 @@ impl App {
 
     pub fn get_selected_host(&self) -> Option<&SshHost> {
         self.list_state.selected()
-            .and_then(|selected| self.filtered_hosts.get(selected))
-            .and_then(|&host_idx| self.hosts.get(host_idx))
+            .and_then(|selected| self.tree_items.get(selected))
+            .and_then(|tree_item| match tree_item {
+                TreeItem::Host { host_index } => self.hosts.get(*host_index),
+                TreeItem::Folder { .. } => None,
+            })
     }
 
     fn start_adding_host(&mut self) {
@@ -272,12 +338,20 @@ impl App {
             user: String::new(),
             port: String::new(),
             identity_file: String::new(),
+            folder: String::new(),
+            display_name: String::new(),
+            description: String::new(),
+            visible: true,
             current_field: 0,
             original_name: String::new(),
             original_hostname: String::new(),
             original_user: String::new(),
             original_port: String::new(),
             original_identity_file: String::new(),
+            original_folder: String::new(),
+            original_display_name: String::new(),
+            original_description: String::new(),
+            original_visible: true,
         };
         self.editing_host = Some(editing_data);
         self.editing_host_index = None;
@@ -287,13 +361,18 @@ impl App {
 
     fn start_editing_selected_host(&mut self) {
         if let Some(selected) = self.list_state.selected() {
-            if let Some(&host_idx) = self.filtered_hosts.get(selected) {
-                if let Some(host) = self.hosts.get(host_idx) {
+            if let Some(tree_item) = self.tree_items.get(selected) {
+                if let TreeItem::Host { host_index } = tree_item {
+                    if let Some(host) = self.hosts.get(*host_index) {
                     let name = host.name.clone();
                     let hostname = host.hostname.clone().unwrap_or_default();
                     let user = host.user.clone().unwrap_or_default();
                     let port = host.port.clone().unwrap_or_default();
                     let identity_file = host.identity_file.clone().unwrap_or_default();
+                    let folder = host.folder.clone().unwrap_or_default();
+                    let display_name = host.display_name.clone().unwrap_or_default();
+                    let description = host.description.clone().unwrap_or_default();
+                    let visible = host.visible;
                     
                     let editing_data = EditingHostData {
                         name: name.clone(),
@@ -301,17 +380,26 @@ impl App {
                         user: user.clone(),
                         port: port.clone(),
                         identity_file: identity_file.clone(),
+                        folder: folder.clone(),
+                        display_name: display_name.clone(),
+                        description: description.clone(),
+                        visible,
                         current_field: 0,
                         original_name: name,
                         original_hostname: hostname,
                         original_user: user,
                         original_port: port,
                         original_identity_file: identity_file,
+                        original_folder: folder,
+                        original_display_name: display_name,
+                        original_description: description,
+                        original_visible: visible,
                     };
                     self.editing_host = Some(editing_data);
-                    self.editing_host_index = Some(host_idx);
+                    self.editing_host_index = Some(*host_index);
                     self.current_edit_change_index = None;
                     self.mode = AppMode::EditingHost;
+                    }
                 }
             }
         }
@@ -319,9 +407,11 @@ impl App {
 
     fn start_deleting_selected_host(&mut self) {
         if let Some(selected) = self.list_state.selected() {
-            if let Some(&host_idx) = self.filtered_hosts.get(selected) {
-                self.delete_target = Some(host_idx);
-                self.mode = AppMode::ConfirmDelete;
+            if let Some(tree_item) = self.tree_items.get(selected) {
+                if let TreeItem::Host { host_index } = tree_item {
+                    self.delete_target = Some(*host_index);
+                    self.mode = AppMode::ConfirmDelete;
+                }
             }
         }
     }
@@ -339,36 +429,67 @@ impl App {
                     }
                 }
                 KeyCode::Tab | KeyCode::Down => {
-                    editing_data.current_field = (editing_data.current_field + 1) % 5;
+                    editing_data.current_field = (editing_data.current_field + 1) % 9;
                 }
                 KeyCode::BackTab | KeyCode::Up => {
-                    editing_data.current_field = if editing_data.current_field == 0 { 4 } else { editing_data.current_field - 1 };
+                    editing_data.current_field = if editing_data.current_field == 0 { 8 } else { editing_data.current_field - 1 };
                 }
                 KeyCode::Enter => {
                     self.save_edited_host();
                     terminal.terminal().clear().map_err(|e| SshcError::Terminal(e.to_string()))?;
                 }
                 KeyCode::Backspace => {
-                    let field = match editing_data.current_field {
-                        0 => &mut editing_data.name,
-                        1 => &mut editing_data.hostname,
-                        2 => &mut editing_data.user,
-                        3 => &mut editing_data.port,
-                        4 => &mut editing_data.identity_file,
-                        _ => &mut editing_data.name,
+                    match editing_data.current_field {
+                        0 => { editing_data.name.pop(); },
+                        1 => { editing_data.hostname.pop(); },
+                        2 => { editing_data.user.pop(); },
+                        3 => { editing_data.port.pop(); },
+                        4 => { editing_data.identity_file.pop(); },
+                        5 => { editing_data.folder.pop(); },
+                        6 => { editing_data.display_name.pop(); },
+                        7 => { editing_data.description.pop(); },
+                        8 => { }, // 可见性字段不支持backspace
+                        _ => {},
                     };
-                    field.pop();
+                }
+                KeyCode::Char(' ') => {
+                    if editing_data.current_field == 8 {
+                        editing_data.visible = !editing_data.visible;
+                    } else {
+                        // 对其他字段添加空格
+                        match editing_data.current_field {
+                            0 => { editing_data.name.push(' '); },
+                            1 => { editing_data.hostname.push(' '); },
+                            2 => { editing_data.user.push(' '); },
+                            3 => { editing_data.port.push(' '); },
+                            4 => { editing_data.identity_file.push(' '); },
+                            5 => { editing_data.folder.push(' '); },
+                            6 => { editing_data.display_name.push(' '); },
+                            7 => { editing_data.description.push(' '); },
+                            _ => {},
+                        };
+                    }
                 }
                 KeyCode::Char(c) => {
-                    let field = match editing_data.current_field {
-                        0 => &mut editing_data.name,
-                        1 => &mut editing_data.hostname,
-                        2 => &mut editing_data.user,
-                        3 => &mut editing_data.port,
-                        4 => &mut editing_data.identity_file,
-                        _ => &mut editing_data.name,
+                    match editing_data.current_field {
+                        0 => { editing_data.name.push(c); },
+                        1 => { editing_data.hostname.push(c); },
+                        2 => { editing_data.user.push(c); },
+                        3 => { editing_data.port.push(c); },
+                        4 => { editing_data.identity_file.push(c); },
+                        5 => { editing_data.folder.push(c); },
+                        6 => { editing_data.display_name.push(c); },
+                        7 => { editing_data.description.push(c); },
+                        8 => { 
+                            // 对于可见性字段，允许输入 t/f 或 y/n
+                            match c.to_lowercase().next() {
+                                Some('t') | Some('y') => editing_data.visible = true,
+                                Some('f') | Some('n') => editing_data.visible = false,
+                                _ => {},
+                            }
+                        },
+                        _ => {},
                     };
-                    field.push(c);
                 }
                 _ => {}
             }
@@ -387,10 +508,10 @@ impl App {
                         
                         // Update selection
                         if let Some(selected) = self.list_state.selected() {
-                            if self.filtered_hosts.is_empty() {
+                            if self.tree_items.is_empty() {
                                 self.list_state.select(None);
-                            } else if selected >= self.filtered_hosts.len() {
-                                self.list_state.select(Some(self.filtered_hosts.len() - 1));
+                            } else if selected >= self.tree_items.len() {
+                                self.list_state.select(Some(self.tree_items.len() - 1));
                             }
                         }
                     }
@@ -461,6 +582,18 @@ impl App {
             if !editing_data.identity_file.is_empty() {
                 new_host.identity_file = Some(editing_data.identity_file.clone());
             }
+            
+            // 设置元数据字段
+            if !editing_data.folder.is_empty() {
+                new_host.folder = Some(editing_data.folder.clone());
+            }
+            if !editing_data.display_name.is_empty() {
+                new_host.display_name = Some(editing_data.display_name.clone());
+            }
+            if !editing_data.description.is_empty() {
+                new_host.description = Some(editing_data.description.clone());
+            }
+            new_host.visible = editing_data.visible;
 
             if let Some(host_idx) = self.editing_host_index {
                 // Editing existing host
@@ -512,6 +645,20 @@ impl App {
         for change in &self.pending_changes {
             match change {
                 ChangeType::Added(host) => {
+                    // 显示元数据注释
+                    if let Some(folder) = &host.folder {
+                        lines.push(format!("+ # @folder: {}", folder));
+                    }
+                    if let Some(display_name) = &host.display_name {
+                        lines.push(format!("+ # @name: {}", display_name));
+                    }
+                    if let Some(description) = &host.description {
+                        lines.push(format!("+ # @description: {}", description));
+                    }
+                    if !host.visible {
+                        lines.push(format!("+ # @visible: false"));
+                    }
+                    
                     lines.push(format!("+ Host {}", host.name));
                     if let Some(hostname) = &host.hostname {
                         lines.push(format!("+   HostName {}", hostname));
@@ -535,7 +682,40 @@ impl App {
                 ChangeType::Modified { old, new } => {
                     lines.push(format!("~ Host {}", old.name));
                     
-                    // Compare each field
+                    // 比较元数据字段
+                    if old.folder != new.folder {
+                        if let Some(old_folder) = &old.folder {
+                            lines.push(format!("- # @folder: {}", old_folder));
+                        }
+                        if let Some(new_folder) = &new.folder {
+                            lines.push(format!("+ # @folder: {}", new_folder));
+                        }
+                    }
+                    
+                    if old.display_name != new.display_name {
+                        if let Some(old_name) = &old.display_name {
+                            lines.push(format!("- # @name: {}", old_name));
+                        }
+                        if let Some(new_name) = &new.display_name {
+                            lines.push(format!("+ # @name: {}", new_name));
+                        }
+                    }
+                    
+                    if old.description != new.description {
+                        if let Some(old_desc) = &old.description {
+                            lines.push(format!("- # @description: {}", old_desc));
+                        }
+                        if let Some(new_desc) = &new.description {
+                            lines.push(format!("+ # @description: {}", new_desc));
+                        }
+                    }
+                    
+                    if old.visible != new.visible {
+                        lines.push(format!("- # @visible: {}", old.visible));
+                        lines.push(format!("+ # @visible: {}", new.visible));
+                    }
+                    
+                    // 比较基本SSH配置字段
                     if old.hostname != new.hostname {
                         if let Some(old_hostname) = &old.hostname {
                             lines.push(format!("-   HostName {}", old_hostname));
@@ -575,6 +755,20 @@ impl App {
                     lines.push(String::new());
                 }
                 ChangeType::Deleted(host) => {
+                    // 显示被删除的元数据注释
+                    if let Some(folder) = &host.folder {
+                        lines.push(format!("- # @folder: {}", folder));
+                    }
+                    if let Some(display_name) = &host.display_name {
+                        lines.push(format!("- # @name: {}", display_name));
+                    }
+                    if let Some(description) = &host.description {
+                        lines.push(format!("- # @description: {}", description));
+                    }
+                    if !host.visible {
+                        lines.push(format!("- # @visible: false"));
+                    }
+                    
                     lines.push(format!("- Host {}", host.name));
                     if let Some(hostname) = &host.hostname {
                         lines.push(format!("-   HostName {}", hostname));
@@ -607,7 +801,11 @@ impl App {
             editing_data.hostname != editing_data.original_hostname ||
             editing_data.user != editing_data.original_user ||
             editing_data.port != editing_data.original_port ||
-            editing_data.identity_file != editing_data.original_identity_file
+            editing_data.identity_file != editing_data.original_identity_file ||
+            editing_data.folder != editing_data.original_folder ||
+            editing_data.display_name != editing_data.original_display_name ||
+            editing_data.description != editing_data.original_description ||
+            editing_data.visible != editing_data.original_visible
         } else {
             false
         }
@@ -685,6 +883,101 @@ impl App {
             license: env!("CARGO_PKG_LICENSE").to_string(),
             description: env!("CARGO_PKG_DESCRIPTION").to_string(),
             repository: env!("CARGO_PKG_REPOSITORY").to_string(),
+        }
+    }
+
+    pub fn get_available_folders(&self) -> Vec<String> {
+        let mut folders: Vec<String> = self.hosts
+            .iter()
+            .filter_map(|host| host.folder.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        folders.sort();
+        folders
+    }
+
+    pub fn rebuild_tree(&mut self) {
+        self.tree_items.clear();
+        
+        // 按文件夹分组主机
+        let mut folder_groups: std::collections::HashMap<Option<String>, Vec<usize>> = std::collections::HashMap::new();
+        
+        for (index, host) in self.hosts.iter().enumerate() {
+            if !host.visible {
+                continue; // 跳过不可见的主机
+            }
+            
+            let folder_key = host.folder.clone();
+            folder_groups.entry(folder_key).or_insert_with(Vec::new).push(index);
+        }
+        
+        // 处理有文件夹的主机，按字母顺序排序
+        let mut folder_names: Vec<String> = folder_groups.keys().filter_map(|k| k.clone()).collect();
+        folder_names.sort();
+        
+        for folder_name in folder_names {
+            if let Some(mut host_indices) = folder_groups.get(&Some(folder_name.clone())).cloned() {
+                // 对文件夹内的主机也按名称排序
+                host_indices.sort_by(|&a, &b| {
+                    let name_a = self.hosts.get(a).map(|h| h.get_display_name()).unwrap_or_default();
+                    let name_b = self.hosts.get(b).map(|h| h.get_display_name()).unwrap_or_default();
+                    name_a.cmp(&name_b)
+                });
+                
+                let folder_item = TreeItem::Folder {
+                    name: folder_name,
+                    expanded: true,  // 默认展开
+                    children_indices: host_indices.clone(),
+                };
+                self.tree_items.push(folder_item);
+                
+                // 添加文件夹中的主机（只在展开状态下）
+                for &host_index in &host_indices {
+                    self.tree_items.push(TreeItem::Host { host_index });
+                }
+            }
+        }
+        
+        // 处理根目录下的主机（没有文件夹的），按名称排序后添加
+        if let Some(mut root_hosts) = folder_groups.remove(&None) {
+            root_hosts.sort_by(|&a, &b| {
+                let name_a = self.hosts.get(a).map(|h| h.get_display_name()).unwrap_or_default();
+                let name_b = self.hosts.get(b).map(|h| h.get_display_name()).unwrap_or_default();
+                name_a.cmp(&name_b)
+            });
+            
+            for host_index in root_hosts {
+                self.tree_items.push(TreeItem::Host { host_index });
+            }
+        }
+    }
+
+    pub fn toggle_folder_expanded(&mut self, folder_index: usize) {
+        if let Some(&mut TreeItem::Folder { ref mut expanded, ref children_indices, .. }) = self.tree_items.get_mut(folder_index) {
+            *expanded = !*expanded;
+            
+            if *expanded {
+                // 展开：在文件夹后按排序顺序插入子项
+                let mut children = children_indices.clone();
+                children.sort_by(|&a, &b| {
+                    let name_a = self.hosts.get(a).map(|h| h.get_display_name()).unwrap_or_default();
+                    let name_b = self.hosts.get(b).map(|h| h.get_display_name()).unwrap_or_default();
+                    name_a.cmp(&name_b)
+                });
+                
+                for (i, &host_index) in children.iter().enumerate() {
+                    self.tree_items.insert(folder_index + 1 + i, TreeItem::Host { host_index });
+                }
+            } else {
+                // 收起：移除子项
+                let children_count = children_indices.len();
+                for _ in 0..children_count {
+                    if folder_index + 1 < self.tree_items.len() {
+                        self.tree_items.remove(folder_index + 1);
+                    }
+                }
+            }
         }
     }
 }

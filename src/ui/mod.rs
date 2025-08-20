@@ -53,16 +53,38 @@ fn render_search_box(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 }
 
 fn render_host_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let items: Vec<ListItem> = app.filtered_hosts
+    let items: Vec<ListItem> = app.tree_items
         .iter()
-        .map(|&i| {
-            let host = &app.hosts[i];
-            ListItem::new(Line::from(vec![Span::raw(host.display_name())]))
+        .map(|tree_item| {
+            match tree_item {
+                crate::core::TreeItem::Folder { name, expanded, .. } => {
+                    let icon = if *expanded { "[-]" } else { "[+]" };
+                    let folder_text = format!("{} {}", icon, name);
+                    ListItem::new(Line::from(vec![
+                        Span::styled(folder_text, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                    ]))
+                },
+                crate::core::TreeItem::Host { host_index } => {
+                    if let Some(host) = app.hosts.get(*host_index) {
+                        let indent = if host.folder.is_some() { "  " } else { "" };
+                        let display_text = format!("{}{}", indent, host.get_full_display_info());
+                        ListItem::new(Line::from(vec![Span::raw(display_text)]))
+                    } else {
+                        ListItem::new(Line::from(vec![Span::raw("Invalid host")]))
+                    }
+                }
+            }
         })
         .collect();
 
+    let title = if app.search_query.is_empty() {
+        "SSH Hosts (Enter/Space: Connect/Toggle folder, e: Edit)"
+    } else {
+        "Search Results"
+    };
+
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title("Host List"))
+        .block(Block::default().borders(Borders::ALL).title(title))
         .highlight_style(Style::default().bg(Color::LightGreen).add_modifier(Modifier::BOLD))
         .highlight_symbol(">> ");
 
@@ -71,8 +93,8 @@ fn render_host_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
 fn render_help_text(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let help_text = match app.mode {
-        AppMode::Search => "ESC: Exit search | Enter: Select and connect",
-        AppMode::Normal => "↑↓: Select | Enter: Connect | /: Search | e: Edit config | v: Version | q: Quit",
+        AppMode::Search => "ESC: Exit search | Enter/Space: Select and connect",
+        AppMode::Normal => "↑↓: Select | Enter/Space: Connect/Toggle folder | /: Search | e: Edit config | v: Version | q: Quit",
         AppMode::ConfigManagement =>
             "a: Add host | e: Edit host | d: Delete host | q: Save & exit | ESC: Back",
         _ => "",
@@ -102,7 +124,7 @@ fn render_edit_form(f: &mut Frame, app: &App) {
     if let Some(editing_data) = &app.editing_host {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .margin(2)
+            .margin(1)
             .constraints([
                 Constraint::Length(3), // Title
                 Constraint::Length(3), // Name
@@ -110,6 +132,10 @@ fn render_edit_form(f: &mut Frame, app: &App) {
                 Constraint::Length(3), // User
                 Constraint::Length(3), // Port
                 Constraint::Length(3), // Identity File
+                Constraint::Length(3), // Folder
+                Constraint::Length(3), // Display Name
+                Constraint::Length(3), // Description
+                Constraint::Length(3), // Visible
                 Constraint::Min(1), // Help
             ])
             .split(f.size());
@@ -119,11 +145,14 @@ fn render_edit_form(f: &mut Frame, app: &App) {
         f.render_widget(title_paragraph, chunks[0]);
 
         let fields = [
-            ("Name", &editing_data.name, 0),
-            ("Hostname", &editing_data.hostname, 1),
-            ("User", &editing_data.user, 2),
-            ("Port", &editing_data.port, 3),
-            ("Identity File", &editing_data.identity_file, 4),
+            ("Name", editing_data.name.as_str(), 0),
+            ("Hostname", editing_data.hostname.as_str(), 1),
+            ("User", editing_data.user.as_str(), 2),
+            ("Port", editing_data.port.as_str(), 3),
+            ("Identity File", editing_data.identity_file.as_str(), 4),
+            ("Folder", editing_data.folder.as_str(), 5),
+            ("Display Name *", editing_data.display_name.as_str(), 6),
+            ("Description *", editing_data.description.as_str(), 7),
         ];
 
         for (i, (label, value, field_index)) in fields.iter().enumerate() {
@@ -133,15 +162,27 @@ fn render_edit_form(f: &mut Frame, app: &App) {
                 Style::default()
             };
 
-            let paragraph = Paragraph::new(value.as_str())
+            let paragraph = Paragraph::new(*value)
                 .style(style)
                 .block(Block::default().borders(Borders::ALL).title(*label));
             f.render_widget(paragraph, chunks[i + 1]);
         }
 
-        let help_text = "Tab/↑↓: Navigate fields | Enter: Save | ESC: Cancel";
+        // 可见性字段特殊处理
+        let visible_style = if 8 == editing_data.current_field {
+            Style::default().bg(Color::Yellow).fg(Color::Black)
+        } else {
+            Style::default()
+        };
+        let visible_text = if editing_data.visible { "Yes" } else { "No" };
+        let visible_paragraph = Paragraph::new(visible_text)
+            .style(visible_style)
+            .block(Block::default().borders(Borders::ALL).title("Visible on main page"));
+        f.render_widget(visible_paragraph, chunks[8]);
+
+        let help_text = "Tab/↑↓: Navigate | Enter: Save | ESC: Cancel | Space: Toggle visible | *=Optional";
         let help_paragraph = Paragraph::new(help_text).style(Style::default().fg(Color::Gray));
-        f.render_widget(help_paragraph, chunks[6]);
+        f.render_widget(help_paragraph, chunks[9]);
     }
 }
 
