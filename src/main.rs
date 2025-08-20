@@ -1,4 +1,4 @@
-use sshc::run;
+use ssh_tui::run;
 use std::process;
 
 fn main() {

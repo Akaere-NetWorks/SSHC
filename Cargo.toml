@@ -1,7 +1,11 @@
 [package]
-name = "sshc"
+name = "ssh-tui"
 version = "0.1.0"
 edition = "2024"
+authors = ["Akaere Networks"]
+license = "AGPL-3.0"
+description = "A Terminal User Interface for SSH connection management"
+repository = "https://github.com/Akaere-NetWorks/SSHC"
 
 [dependencies]
 crossterm = "0.27"

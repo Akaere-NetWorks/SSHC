@@ -15,6 +15,7 @@ pub enum AppMode {
     ConfirmDelete,
     ConfirmDiscardEdit,
     ReviewChanges,
+    ShowVersion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -60,6 +61,7 @@ pub struct App {
     pub pending_changes: Vec<ChangeType>,
     pub delete_target: Option<usize>,
     pub review_scroll: usize,
+    pub current_edit_change_index: Option<usize>,
     pub should_quit: bool,
 }
 
@@ -86,6 +88,7 @@ impl App {
             pending_changes: Vec::new(),
             delete_target: None,
             review_scroll: 0,
+            current_edit_change_index: None,
             should_quit: false,
         })
     }
@@ -101,6 +104,7 @@ impl App {
                     AppMode::ConfirmDelete => self.handle_delete_confirm_input(key.code)?,
                     AppMode::ConfirmDiscardEdit => self.handle_discard_edit_confirm_input(key.code)?,
                     AppMode::ReviewChanges => self.handle_review_input(key.code)?,
+                    AppMode::ShowVersion => self.handle_version_input(key.code)?,
                 }
             }
         }
@@ -134,6 +138,7 @@ impl App {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('/') => self.mode = AppMode::Search,
             KeyCode::Char('e') => self.mode = AppMode::ConfigManagement,
+            KeyCode::Char('v') => self.mode = AppMode::ShowVersion,
             KeyCode::Down => self.next(),
             KeyCode::Up => self.previous(),
             KeyCode::Enter => self.connect_to_selected(terminal)?,
@@ -145,8 +150,12 @@ impl App {
     fn handle_config_input(&mut self, key_code: KeyCode, _terminal: &mut TerminalManager) -> Result<()> {
         match key_code {
             KeyCode::Esc => {
-                self.mode = AppMode::Normal;
-                self.config_action = ConfigAction::None;
+                if !self.pending_changes.is_empty() {
+                    self.mode = AppMode::ReviewChanges;
+                } else {
+                    self.mode = AppMode::Normal;
+                    self.config_action = ConfigAction::None;
+                }
             }
             KeyCode::Char('q') => {
                 if !self.pending_changes.is_empty() {
@@ -272,6 +281,7 @@ impl App {
         };
         self.editing_host = Some(editing_data);
         self.editing_host_index = None;
+        self.current_edit_change_index = None;
         self.mode = AppMode::EditingHost;
     }
 
@@ -300,6 +310,7 @@ impl App {
                     };
                     self.editing_host = Some(editing_data);
                     self.editing_host_index = Some(host_idx);
+                    self.current_edit_change_index = None;
                     self.mode = AppMode::EditingHost;
                 }
             }
@@ -455,11 +466,13 @@ impl App {
                 // Editing existing host
                 if let Some(old_host) = self.hosts.get(host_idx).cloned() {
                     self.pending_changes.push(ChangeType::Modified { old: old_host, new: new_host.clone() });
+                    self.current_edit_change_index = Some(self.pending_changes.len() - 1);
                     self.hosts[host_idx] = new_host;
                 }
             } else {
                 // Adding new host
                 self.pending_changes.push(ChangeType::Added(new_host.clone()));
+                self.current_edit_change_index = Some(self.pending_changes.len() - 1);
                 self.hosts.push(new_host);
             }
 
@@ -468,6 +481,7 @@ impl App {
 
         self.editing_host = None;
         self.editing_host_index = None;
+        self.current_edit_change_index = None;
         self.mode = AppMode::ConfigManagement;
     }
 
@@ -603,8 +617,10 @@ impl App {
         match key_code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 // Discard changes and exit
+                self.discard_current_edit();
                 self.editing_host = None;
                 self.editing_host_index = None;
+                self.current_edit_change_index = None;
                 self.mode = AppMode::ConfigManagement;
             }
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
@@ -615,4 +631,70 @@ impl App {
         }
         Ok(())
     }
+
+    fn discard_current_edit(&mut self) {
+        // If there's a current edit change that was already saved, remove it and revert the hosts
+        if let Some(change_index) = self.current_edit_change_index {
+            if change_index < self.pending_changes.len() {
+                match &self.pending_changes[change_index] {
+                    ChangeType::Added(_) => {
+                        // Remove the added host
+                        if self.editing_host_index.is_some() {
+                            // This is an edit, don't remove
+                        } else {
+                            // This was a new addition, remove the last host
+                            self.hosts.pop();
+                        }
+                    }
+                    ChangeType::Modified { old, .. } => {
+                        // Revert to old host
+                        if let Some(host_idx) = self.editing_host_index {
+                            self.hosts[host_idx] = old.clone();
+                        }
+                    }
+                    ChangeType::Deleted(_) => {
+                        // This shouldn't happen in edit context
+                    }
+                }
+                
+                // Remove the change from pending_changes
+                self.pending_changes.remove(change_index);
+                self.filter_hosts();
+            }
+        }
+        // Note: If current_edit_change_index is None, it means the user was editing
+        // but never saved (never pressed Enter), so there's nothing to revert in
+        // hosts or pending_changes - just clearing the editing state is sufficient
+    }
+
+    fn handle_version_input(&mut self, key_code: KeyCode) -> Result<()> {
+        match key_code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                self.mode = AppMode::Normal;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    pub fn get_version_info() -> VersionInfo {
+        VersionInfo {
+            name: env!("CARGO_PKG_NAME").to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            authors: env!("CARGO_PKG_AUTHORS").to_string(),
+            license: env!("CARGO_PKG_LICENSE").to_string(),
+            description: env!("CARGO_PKG_DESCRIPTION").to_string(),
+            repository: env!("CARGO_PKG_REPOSITORY").to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct VersionInfo {
+    pub name: String,
+    pub version: String,
+    pub authors: String,
+    pub license: String,
+    pub description: String,
+    pub repository: String,
 }

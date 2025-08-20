@@ -14,6 +14,7 @@ pub fn render(f: &mut Frame, app: &App) {
         AppMode::ConfirmDelete => render_delete_confirm(f, app),
         AppMode::ConfirmDiscardEdit => render_discard_edit_confirm(f, app),
         AppMode::ReviewChanges => render_changes_review(f, app),
+        AppMode::ShowVersion => render_version_info(f, app),
         _ => render_main_view(f, app),
     }
 }
@@ -71,7 +72,7 @@ fn render_host_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 fn render_help_text(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let help_text = match app.mode {
         AppMode::Search => "ESC: Exit search | Enter: Select and connect",
-        AppMode::Normal => "↑↓: Select | Enter: Connect | /: Search | e: Edit config | q: Quit",
+        AppMode::Normal => "↑↓: Select | Enter: Connect | /: Search | e: Edit config | v: Version | q: Quit",
         AppMode::ConfigManagement =>
             "a: Add host | e: Edit host | d: Delete host | q: Save & exit | ESC: Back",
         _ => "",
@@ -279,4 +280,66 @@ fn centered_rect(
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(popup_layout[1])[1]
+}
+
+fn render_version_info(f: &mut Frame, _app: &App) {
+    let area = centered_rect(60, 50, f.size());
+    f.render_widget(ratatui::widgets::Clear, area);
+
+    let version_info = crate::app::App::get_version_info();
+    
+    let lines = vec![
+        Line::from(Span::styled(
+            format!("{}", version_info.name.to_uppercase()),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("Version: {}", version_info.version),
+            Style::default().fg(Color::Green)
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("Description: {}", version_info.description),
+            Style::default().fg(Color::White)
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("Authors: {}", version_info.authors),
+            Style::default().fg(Color::Yellow)
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("License: {}", version_info.license),
+            Style::default().fg(Color::Magenta)
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("Repository: {}", version_info.repository),
+            Style::default().fg(Color::Blue)
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "A Terminal User Interface for SSH connection management",
+            Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC)
+        )),
+    ];
+
+    let paragraph = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title("About"))
+        .alignment(ratatui::layout::Alignment::Center)
+        .wrap(ratatui::widgets::Wrap { trim: true });
+    f.render_widget(paragraph, area);
+
+    let help_area = ratatui::layout::Rect {
+        x: area.x + 1,
+        y: area.bottom() - 2,
+        width: area.width - 2,
+        height: 1,
+    };
+    let help_text = "Press any key to continue";
+    let help_paragraph = Paragraph::new(help_text)
+        .style(Style::default().fg(Color::Gray))
+        .alignment(ratatui::layout::Alignment::Center);
+    f.render_widget(help_paragraph, help_area);
 }
