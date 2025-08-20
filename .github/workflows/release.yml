@@ -1,0 +1,106 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-22.04, ubuntu-24.04-arm, ubuntu-22.04-arm, windows-2025, windows-2022, windows-11-arm, macos-15, macos-14, macos-13]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Determine artifact name (Windows)
+        if: runner.os == 'Windows'
+        id: artifact_name_win
+        shell: pwsh
+        run: |
+          $osName = "${{ matrix.os }}"
+          $ext = ".exe"
+          $artifact = "ssh-tui-$osName$ext"
+          Copy-Item target/release/ssht.exe $artifact
+          echo "artifact=$artifact" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Determine artifact name (Non-Windows)
+        if: runner.os != 'Windows'
+        id: artifact_name_unix
+        shell: bash
+        run: |
+          OS_NAME="${{ matrix.os }}"
+          EXT=""
+          ARTIFACT="ssh-tui-$OS_NAME$EXT"
+          cp target/release/ssht$EXT $ARTIFACT
+          echo "artifact=$ARTIFACT" >> $GITHUB_OUTPUT
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssh-tui-${{ matrix.os }}
+          path: ${{ steps.artifact_name_win.outputs.artifact || steps.artifact_name_unix.outputs.artifact }}
+
+  deb:
+    name: Build .deb package on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-22.04, ubuntu-24.04-arm, ubuntu-22.04-arm]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
+
+      - name: Build .deb package
+        run: cargo deb
+
+      - name: Rename .deb package
+        id: deb_name
+        run: |
+          OS_NAME="${{ matrix.os }}"
+          DEB_ORIG=$(ls target/debian/*.deb | head -n1)
+          DEB_BASE=$(basename "$DEB_ORIG" .deb)
+          DEB_NEW="${DEB_BASE}-${OS_NAME}.deb"
+          mv "$DEB_ORIG" "target/debian/$DEB_NEW"
+          echo "debfile=target/debian/$DEB_NEW" >> $GITHUB_OUTPUT
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssh-tui-deb-${{ matrix.os }}
+          path: ${{ steps.deb_name.outputs.debfile }}
+
+  release:
+    name: Create Release
+    needs: [build, deb]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./artifacts/**/ssh-tui*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
