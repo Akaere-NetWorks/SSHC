@@ -14,10 +14,26 @@ pub struct SshHost {
 
 impl SshHost {
     pub fn display_name(&self) -> String {
-        match (&self.hostname, &self.user) {
-            (Some(host), Some(user)) => format!("{} ({}@{})", self.name, user, host),
-            (Some(host), None) => format!("{} ({})", self.name, host),
-            _ => self.name.clone(),
+        let mut info_parts = Vec::new();
+        
+        if let Some(user) = &self.user {
+            if let Some(hostname) = &self.hostname {
+                info_parts.push(format!("{}@{}", user, hostname));
+            } else {
+                info_parts.push(format!("user:{}", user));
+            }
+        } else if let Some(hostname) = &self.hostname {
+            info_parts.push(hostname.clone());
+        }
+        
+        if let Some(port) = &self.port {
+            info_parts.push(format!("port:{}", port));
+        }
+        
+        if !info_parts.is_empty() {
+            format!("{} ({})", self.name, info_parts.join(" "))
+        } else {
+            self.name.clone()
         }
     }
 
@@ -52,12 +68,12 @@ pub fn parse_ssh_config() -> Result<Vec<SshHost>> {
         }
 
         let parts: Vec<&str> = line.splitn(2, char::is_whitespace).collect();
-        if parts.len() < 2 {
+        if parts.is_empty() {
             continue;
         }
 
         let key = parts[0].to_lowercase();
-        let value = parts[1].trim();
+        let value = if parts.len() > 1 { parts[1].trim() } else { "" };
 
         match key.as_str() {
             "host" => {
@@ -75,22 +91,30 @@ pub fn parse_ssh_config() -> Result<Vec<SshHost>> {
             }
             "hostname" => {
                 if let Some(ref mut host) = current_host {
-                    host.hostname = Some(value.to_string());
+                    if !value.is_empty() {
+                        host.hostname = Some(value.to_string());
+                    }
                 }
             }
             "user" => {
                 if let Some(ref mut host) = current_host {
-                    host.user = Some(value.to_string());
+                    if !value.is_empty() {
+                        host.user = Some(value.to_string());
+                    }
                 }
             }
             "port" => {
                 if let Some(ref mut host) = current_host {
-                    host.port = Some(value.to_string());
+                    if !value.is_empty() {
+                        host.port = Some(value.to_string());
+                    }
                 }
             }
             "identityfile" => {
                 if let Some(ref mut host) = current_host {
-                    host.identity_file = Some(value.to_string());
+                    if !value.is_empty() {
+                        host.identity_file = Some(value.to_string());
+                    }
                 }
             }
             _ => {
@@ -106,4 +130,61 @@ pub fn parse_ssh_config() -> Result<Vec<SshHost>> {
     }
 
     Ok(hosts)
+}
+
+pub fn write_ssh_config(hosts: &[SshHost]) -> Result<()> {
+    let home_dir = home::home_dir().context("Unable to get user home directory")?;
+    let config_path = home_dir.join(".ssh").join("config");
+    
+    // Create .ssh directory if it doesn't exist
+    let ssh_dir = home_dir.join(".ssh");
+    if !ssh_dir.exists() {
+        std::fs::create_dir_all(&ssh_dir)
+            .with_context(|| format!("Unable to create .ssh directory: {:?}", ssh_dir))?;
+    }
+
+    let mut content = String::new();
+    
+    for host in hosts {
+        content.push_str(&format!("Host {}\n", host.name));
+        
+        if let Some(hostname) = &host.hostname {
+            content.push_str(&format!("    HostName {}\n", hostname));
+        }
+        if let Some(user) = &host.user {
+            content.push_str(&format!("    User {}\n", user));
+        }
+        if let Some(port) = &host.port {
+            content.push_str(&format!("    Port {}\n", port));
+        }
+        if let Some(identity_file) = &host.identity_file {
+            content.push_str(&format!("    IdentityFile {}\n", identity_file));
+        }
+        
+        for (key, value) in &host.other_options {
+            content.push_str(&format!("    {} {}\n", 
+                key.chars().next().unwrap().to_uppercase().chain(key.chars().skip(1)).collect::<String>(),
+                value));
+        }
+        
+        content.push('\n');
+    }
+
+    std::fs::write(&config_path, content)
+        .with_context(|| format!("Unable to write SSH config file: {:?}", config_path))?;
+    
+    Ok(())
+}
+
+impl SshHost {
+    pub fn new(name: String) -> Self {
+        SshHost {
+            name,
+            hostname: None,
+            user: None,
+            port: None,
+            identity_file: None,
+            other_options: std::collections::HashMap::new(),
+        }
+    }
 }
