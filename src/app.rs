@@ -154,7 +154,10 @@ impl App {
                     terminal.resume()?;
                     
                     match status {
-                        Ok(_) => (),
+                        Ok(_) => {
+                            // Force a complete redraw by clearing the terminal
+                            terminal.terminal().clear().map_err(|e| SshcError::Terminal(e.to_string()))?;
+                        },
                         Err(e) => return Err(SshcError::Ssh(format!("SSH connection error: {}", e))),
                     }
                 }

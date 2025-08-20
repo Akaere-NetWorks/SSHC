@@ -20,8 +20,11 @@ impl TerminalManager {
             .map_err(|e| SshcError::Terminal(e.to_string()))?;
         
         let backend = CrosstermBackend::new(stdout);
-        let terminal = Terminal::new(backend)
+        let mut terminal = Terminal::new(backend)
             .map_err(|e| SshcError::Terminal(e.to_string()))?;
+        
+        // Hide cursor initially
+        terminal.hide_cursor().map_err(|e| SshcError::Terminal(e.to_string()))?;
 
         Ok(TerminalManager { terminal })
     }
@@ -31,6 +34,8 @@ impl TerminalManager {
     }
 
     pub fn suspend(&mut self) -> Result<()> {
+        // Show cursor before suspending
+        self.terminal.show_cursor().map_err(|e| SshcError::Terminal(e.to_string()))?;
         disable_raw_mode().map_err(|e| SshcError::Terminal(e.to_string()))?;
         execute!(
             self.terminal.backend_mut(),
@@ -47,6 +52,11 @@ impl TerminalManager {
             EnterAlternateScreen,
             EnableMouseCapture
         ).map_err(|e| SshcError::Terminal(e.to_string()))?;
+        
+        // Clear and redraw the terminal
+        self.terminal.clear().map_err(|e| SshcError::Terminal(e.to_string()))?;
+        self.terminal.hide_cursor().map_err(|e| SshcError::Terminal(e.to_string()))?;
+        
         Ok(())
     }
 
