@@ -1,3 +1,9 @@
+use sshc::run;
+use std::process;
+
 fn main() {
-    println!("Hello, world!");
+    if let Err(e) = run() {
+        eprintln!("Application error: {}", e);
+        process::exit(1);
+    }
 }
