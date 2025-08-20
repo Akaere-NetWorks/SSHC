@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{ App, AppMode };
+use crate::core::{ App, AppMode };
 
 pub fn render(f: &mut Frame, app: &App) {
     match app.mode {
@@ -286,7 +286,7 @@ fn render_version_info(f: &mut Frame, _app: &App) {
     let area = centered_rect(60, 50, f.size());
     f.render_widget(ratatui::widgets::Clear, area);
 
-    let version_info = crate::app::App::get_version_info();
+    let version_info = App::get_version_info();
     
     let lines = vec![
         Line::from(Span::styled(

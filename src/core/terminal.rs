@@ -6,7 +6,7 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 
-use crate::error::{Result, SshcError};
+use crate::utils::{Result, SshcError};
 
 pub struct TerminalManager {
     terminal: Terminal<CrosstermBackend<io::Stdout>>,

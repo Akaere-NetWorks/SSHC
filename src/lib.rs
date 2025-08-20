@@ -1,14 +1,12 @@
-pub mod app;
-pub mod error;
-pub mod ssh_config;
-pub mod terminal;
+pub mod core;
+pub mod config;
 pub mod ui;
+pub mod utils;
 
 use crossterm::event;
 
-use crate::app::App;
-use crate::error::Result;
-use crate::terminal::TerminalManager;
+use crate::core::{ App, TerminalManager };
+use crate::utils::Result;
 use crate::ui::render;
 
 pub fn run() -> Result<()> {
@@ -17,7 +15,7 @@ pub fn run() -> Result<()> {
 
     let result = run_app(&mut terminal, &mut app);
     terminal.restore()?;
-    
+
     result
 }
 

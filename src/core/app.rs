@@ -2,9 +2,9 @@ use crossterm::event::{Event, KeyCode, KeyEventKind};
 use ratatui::widgets::ListState;
 use std::process::Command;
 
-use crate::error::{Result, SshcError};
-use crate::ssh_config::{parse_ssh_config, write_ssh_config, SshHost};
-use crate::terminal::TerminalManager;
+use crate::utils::{Result, SshcError};
+use crate::config::{parse_ssh_config, write_ssh_config, SshHost};
+use crate::core::TerminalManager;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AppMode {
